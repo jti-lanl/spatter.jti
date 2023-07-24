@@ -260,8 +260,9 @@ void emit_configs(struct run_config *rc, int nconfigs);
 uint64_t isqrt(uint64_t x);
 uint64_t icbrt(uint64_t x);
 
-spIdx_t remap_pattern(const int nrc, ssize_t *pattern, const spSize_t pattern_len, ssize_t boundary);
- 
+spIdx_t  remap_pattern(const int nrc, spIdx_t *pattern, const spSize_t pattern_len, ssize_t boundary);
+spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset);
+
 
 int main(int argc, char **argv)
 {
@@ -373,7 +374,12 @@ int main(int argc, char **argv)
     // Compute Buffer Sizes
     // =======================================
 
-    if (rc2[0].kernel != GATHER && rc2[0].kernel != SCATTER && rc2[0].kernel != GS && rc2[0].kernel != MULTISCATTER && rc2[0].kernel != MULTIGATHER) {
+    if (rc2[0].kernel != GATHER &&
+        rc2[0].kernel != GATHER_PARTS &&
+        rc2[0].kernel != SCATTER &&
+        rc2[0].kernel != GS &&
+        rc2[0].kernel != MULTISCATTER &&
+        rc2[0].kernel != MULTIGATHER) {
         printf("Error: Unsupported kernel\n");
         exit(1);
     }
@@ -413,6 +419,15 @@ int main(int argc, char **argv)
         
             pattern_delta = rc2[i].delta_gather >= rc2[i].delta_scatter ? rc2[i].delta_gather : rc2[i].delta_scatter;
         }
+        else if (rc2[i].kernel == GATHER_PARTS) {
+            spIdx_t* new_pattern = replicate_pattern(rc2[i].pattern, rc2[i].pattern_len, rc2[i].omp_threads, -1);
+            free(rc2[i].pattern);
+            rc2[i].pattern = new_pattern;
+            rc2[i].pattern_len *= rc2[i].omp_threads;
+
+            max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
+            pattern_delta = rc2[i].delta;
+        }
         else {
             max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
             
@@ -424,7 +439,7 @@ int main(int argc, char **argv)
         //printf("max_pattern_val: %zu, source_size %zu\n", max_pattern_val, cur_source_size);
         //printf("\n");
 
-	if (cur_source_size > max_source_size) {
+        if (cur_source_size > max_source_size) {
             max_source_size = cur_source_size;
         }
 
@@ -734,13 +749,17 @@ int main(int argc, char **argv)
                         }
                         break;
                     case GATHER:
+                    case GATHER_PARTS:
                         if (rc2[k].random_seed >= 1) {
                             gather_smallbuf_random(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap, rc2[k].random_seed);
                         }
                         else if (rc2[k].deltas_len <= 1) {
                             if (rc2[k].ro_morton || rc2[k].ro_hilbert) {
                                 gather_smallbuf_morton(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap, rc2[k].ro_order);
-                            } else {
+                            } else if (rc2[k].kernel == GATHER_PARTS) {
+                                gather_smallbuf_partitioned(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
+                            }
+                            else {
                                 gather_smallbuf(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
                             }
                         } else {
@@ -784,6 +803,7 @@ int main(int argc, char **argv)
                     case SCATTER:
                         scatter_smallbuf_serial(source.host_ptr, target.host_ptrs, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
                         break;
+                    case GATHER_PARTS:
                     case GATHER:
                         gather_smallbuf_serial(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
                         break;
@@ -1163,4 +1183,41 @@ spIdx_t remap_pattern(const int nrc, ssize_t *pattern, const spSize_t pattern_le
 
     printf("Pattern Length: %zu Max Pattern Value: %zu\n\n", pattern_len, max_pattern_val);
     return max_pattern_val;
+}
+
+// for GATHER_PARTS: replicate pattern into <n_threads> successive parts.
+// Increment the values in each part by <offset> * <thread_no>.
+spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset) {
+    spIdx_t max_pattern_val = pattern[0];
+    for (size_t j = 0; j < pattern_len; j++) {
+       if (pattern[j] > max_pattern_val)
+          max_pattern_val = pattern[j];
+    }
+
+    if (offset == -1) {
+       spIdx_t remain = max_pattern_val & (ALIGN_PAGE -1);
+       if (remain)
+          offset = (max_pattern_val & ~(ALIGN_PAGE -1)) + ALIGN_PAGE;
+    }
+
+    spIdx_t* new_pattern = sp_calloc(sizeof(spIdx_t), pattern_len * n_threads, ALIGN_CACHE);
+    assert(new_pattern);
+
+    spIdx_t  cur_offset = 0;
+    spIdx_t* dst        = new_pattern;
+    for (unsigned thr=0; thr<n_threads; ++thr) {
+       for (spIdx_t i=0; i<pattern_len; ++i) {
+          *dst++ = pattern[i] + cur_offset;
+       }
+       cur_offset += offset;
+    }
+
+    printf("Pattern Length: %zu = (%zu * %zu) ",
+           pattern_len * n_threads,
+           pattern_len, n_threads);
+    printf("Max Pattern Value: %zu = (%zu + (%zu-1) * %zu)\n\n",
+           max_pattern_val + ((n_threads -1) * offset),
+           max_pattern_val, n_threads, offset);
+
+    return new_pattern;
 }

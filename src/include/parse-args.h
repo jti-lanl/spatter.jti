@@ -33,6 +33,7 @@ enum sg_kernel
     INVALID_KERNEL=0,
     SCATTER,
     GATHER,
+    GATHER_PARTS,  // threads use different parts of pat
     GS,
     MULTISCATTER,
     MULTIGATHER

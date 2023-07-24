@@ -332,6 +332,57 @@ void gather_smallbuf(
     }
 }
 
+// The preceding gather has many threads accessing the same source via the
+// same pattern.  That seems like it would potentially do a lot of
+// cache-reuse.  The intent in this function is to have each thread gather
+// from a different part of the pattern.  (Or should it be the same pattern
+// applied to different source?  Probably the former, because we suppose
+// the pattern may refer to source elements with much larger indices than
+// the largest pattern-index, in which case replicating the source could
+// have an exhorbitant memory-footprint, and take a lot of work to
+// generate.)
+void gather_smallbuf_partitioned(
+        sgData_t** restrict target,
+        sgData_t* const restrict source,
+        sgIdx_t* const restrict pat,
+        size_t pat_len,
+        size_t delta,
+        size_t n,
+        size_t target_len) {
+
+#ifdef __GNUC__
+    #pragma omp parallel
+#else
+    #pragma omp parallel shared(pat)
+#endif
+    {
+        int    t = omp_get_thread_num();
+        int    n = omp_get_num_threads();
+        size_t pat_part_len = pat_len / n;
+
+#ifdef __CRAYC__
+    #pragma concurrent
+#endif
+#ifdef __INTEL_COMPILER
+    #pragma ivdep
+#endif
+#pragma omp for
+        for (size_t i = 0; i < n; i++) {
+           sgData_t *sl = &source[t * pat_part_len] + delta * i;
+           sgData_t *tl = target[t] + pat_len*(i%target_len);
+#ifdef __CRAYC__
+    #pragma concurrent
+#endif
+#if defined __CRAYC__ || defined __INTEL_COMPILER
+    #pragma vector always,unaligned
+#endif
+           for (size_t j = 0; j < pat_part_len; j++) {
+               tl[j] = sl[pat[j]];
+           }
+        }
+    }
+}
+
 void gather_smallbuf_morton(
         sgData_t** restrict target,
         sgData_t* const restrict source,
