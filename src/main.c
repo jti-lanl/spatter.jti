@@ -1198,9 +1198,11 @@ spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigne
     }
 
     if (offset == -1) {
-       spIdx_t remain = max_pattern_val & (ALIGN_PAGE -1);
-       if (remain)
-          offset = (max_pattern_val & ~(ALIGN_PAGE -1)) + ALIGN_PAGE;
+       // // round up to nearest page
+       // spIdx_t remain = max_pattern_val & (ALIGN_PAGE -1);
+       // if (remain)
+       //    offset = (max_pattern_val & ~(ALIGN_PAGE -1)) + ALIGN_PAGE;
+       offset = max_pattern_val;
     }
 
     spIdx_t* new_pattern = sp_calloc(sizeof(spIdx_t), pattern_len * n_threads, ALIGN_CACHE);
