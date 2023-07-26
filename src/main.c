@@ -420,13 +420,16 @@ int main(int argc, char **argv)
             pattern_delta = rc2[i].delta_gather >= rc2[i].delta_scatter ? rc2[i].delta_gather : rc2[i].delta_scatter;
         }
         else if (rc2[i].kernel == GATHER_PARTS) {
-            spIdx_t* new_pattern = replicate_pattern(rc2[i].pattern, rc2[i].pattern_len, rc2[i].omp_threads, -1);
+            printf("GATHER_PARTS:\n"); // DEBUGGING
+            max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
+            pattern_delta = rc2[i].delta;
+
+            spIdx_t* new_pattern = replicate_pattern(rc2[i].pattern, rc2[i].pattern_len, rc2[i].omp_threads, rc2[i].boundary);
             free(rc2[i].pattern);
             rc2[i].pattern = new_pattern;
             rc2[i].pattern_len *= rc2[i].omp_threads;
 
-            max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
-            pattern_delta = rc2[i].delta;
+            max_pattern_val *= rc2[i].omp_threads;
         }
         else {
             max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
