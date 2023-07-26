@@ -1184,7 +1184,8 @@ spIdx_t remap_pattern(const int nrc, ssize_t *pattern, const spSize_t pattern_le
         }
     }
 
-    printf("Pattern Length: %zu Max Pattern Value: %zu\n\n", pattern_len, max_pattern_val);
+    printf("Pattern Length: %zu Max Pattern Value: %zu (boundary: %llu)\n",
+           pattern_len, max_pattern_val, boundary);
     return max_pattern_val;
 }
 
@@ -1220,7 +1221,7 @@ spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigne
     printf("Pattern Length: %zu = (%zu * %zu) ",
            pattern_len * n_threads,
            pattern_len, n_threads);
-    printf("Max Pattern Value: %zu = (%zu + (%zu-1) * %zu)\n\n",
+    printf("Max Pattern Value: %zu = (%zu + (%zu-1) * %zu)\n",
            max_pattern_val + ((n_threads -1) * offset),
            max_pattern_val, n_threads, offset);
 
