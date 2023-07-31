@@ -344,7 +344,7 @@ void gather_smallbuf(
 void gather_smallbuf_partitioned(
         sgData_t** restrict target,
         sgData_t* const restrict source,
-        sgIdx_t* const restrict pat,
+        sgIndexBuf* const restrict pats,
         size_t pat_len,
         size_t delta,
         size_t n,
@@ -353,12 +353,11 @@ void gather_smallbuf_partitioned(
 #ifdef __GNUC__
     #pragma omp parallel
 #else
-    #pragma omp parallel shared(pat)
+    #pragma omp parallel shared(pats)
 #endif
     {
-        int    t = omp_get_thread_num();
-        int    n = omp_get_num_threads();
-        size_t pat_part_len = pat_len / n;
+        int      t   = omp_get_thread_num();
+        sgIdx_t* pat = pats->host_ptrs[t];
 
 #ifdef __CRAYC__
     #pragma concurrent
@@ -368,7 +367,7 @@ void gather_smallbuf_partitioned(
 #endif
 #pragma omp for
         for (size_t i = 0; i < n; i++) {
-           sgData_t *sl = &source[t * pat_part_len] + delta * i;
+           sgData_t *sl = &source[t * pat_len] + delta * i;
            sgData_t *tl = target[t] + pat_len*(i%target_len);
 #ifdef __CRAYC__
     #pragma concurrent
@@ -376,7 +375,7 @@ void gather_smallbuf_partitioned(
 #if defined __CRAYC__ || defined __INTEL_COMPILER
     #pragma vector always,unaligned
 #endif
-           for (size_t j = 0; j < pat_part_len; j++) {
+           for (size_t j = 0; j < pat_len; j++) {
                tl[j] = sl[pat[j]];
            }
         }

@@ -35,6 +35,11 @@ typedef struct sgDataBuf_t{
 typedef struct sgIndexBuf_t{
     sgIdx_t *host_ptr;    /**< Points to an index buffer on the host (CPU) */
 
+    #ifdef USE_OPENMP
+    sgIdx_t **host_ptrs; /**< per-thread copies of pattern, adjusted with offset */
+    spIdx_t  offset;
+    #endif
+
     #ifdef USE_CUDA
     sgIdx_t *dev_ptr_cuda;/**< Points to an index buffer on the CUDA device */
     #endif

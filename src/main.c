@@ -260,9 +260,8 @@ void emit_configs(struct run_config *rc, int nconfigs);
 uint64_t isqrt(uint64_t x);
 uint64_t icbrt(uint64_t x);
 
-spIdx_t  remap_pattern(const int nrc, spIdx_t *pattern, const spSize_t pattern_len, ssize_t boundary);
-spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset);
-
+spIdx_t remap_pattern(const int nrc, spIdx_t *pattern, const spSize_t pattern_len, ssize_t boundary);
+spIdx_t replicate_pattern(sgIndexBuf* new_patterns, spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset, size_t alignment);
 
 int main(int argc, char **argv)
 {
@@ -390,6 +389,13 @@ int main(int argc, char **argv)
     size_t max_ptrs = 0;
     size_t max_ro_len = 0;
 
+#if USE_OPENMP
+    size_t  buf_align = ALIGN_PAGE; // really just for GATHER_PARTS
+    // size_t  buf_align = ALIGN_CACHE; // really just for GATHER_PARTS
+#else
+    size_t  buf_align = ALIGN_CACHE;
+#endif
+
     for (int i = 0; i < nrc; i++) {
         spIdx_t max_pattern_val;
         ssize_t pattern_delta;
@@ -424,10 +430,10 @@ int main(int argc, char **argv)
             max_pattern_val = remap_pattern(nrc, rc2[i].pattern, rc2[i].pattern_len, rc2[i].boundary);
             pattern_delta = rc2[i].delta;
 
-            spIdx_t* new_pattern = replicate_pattern(rc2[i].pattern, rc2[i].pattern_len, rc2[i].omp_threads, rc2[i].boundary);
+            rc2[i].patterns = (sgIndexBuf*)sp_calloc(sizeof(sgIndexBuf), 1, sizeof(sgIndexBuf*));
+            spIdx_t offset = replicate_pattern(rc2[i].patterns, rc2[i].pattern, rc2[i].pattern_len, rc2[i].omp_threads, rc2[i].boundary, buf_align);
             free(rc2[i].pattern);
-            rc2[i].pattern = new_pattern;
-            rc2[i].pattern_len *= rc2[i].omp_threads;
+            rc2[i].pattern = NULL;
 
             max_pattern_val *= rc2[i].omp_threads;
         }
@@ -527,6 +533,7 @@ int main(int argc, char **argv)
 
     target.nptrs = max_ptrs;
 
+
     // =======================================
     // Create OpenCL Kernel
     // =======================================
@@ -544,15 +551,16 @@ int main(int argc, char **argv)
     // =======================================
     // Create Host Buffers, Fill With Data
     // =======================================
-    source.host_ptr = (sgData_t*) sp_malloc(source.size, 1, ALIGN_CACHE);
+    source.host_ptr = (sgData_t*) sp_malloc(source.size, 1, buf_align);
 
     // replicate the target space for every thread
-    target.host_ptrs = (sgData_t**) sp_malloc(sizeof(sgData_t*), target.nptrs, ALIGN_CACHE);
-    for (size_t i = 0; i < target.nptrs; i++) {
-        target.host_ptrs[i] = (sgData_t*) sp_malloc(target.size, 1, ALIGN_PAGE);
+    target.host_ptrs = (sgData_t**) sp_malloc(sizeof(sgData_t*), target.nptrs, buf_align);
+    #pragma omp parallel for  schedule(monotonic:static,1)
+    for (size_t thr = 0; thr < target.nptrs; thr++) {
+        target.host_ptrs[thr] = (sgData_t*) sp_malloc(target.size, 1, buf_align);
         #ifdef VALIDATE
         if (validate_flag) { // Fill target buffer with data for validation purposes
-            random_data(target.host_ptrs[i], target.len);
+            random_data(target.host_ptrs[thr], target.len);
         }
         #endif
     }
@@ -560,11 +568,15 @@ int main(int argc, char **argv)
     //    printf("-- here -- \n");
 
     // Populate buffers on host
-    #pragma omp parallel for
-    for (size_t i = 0; i < source.len; i++) {
-        source.host_ptr[i] = i % (source.len / 64);
+    // TBD: For OpenMP/Gather_Parts: see "First-Touch" at https://theartofhpc.com/pcse/omp-affinity.html
+    //    For now, maybe this is good.  All the indirections refer to non-local storage?
+    #pragma omp parallel for  schedule(monotonic:static,1)
+    for (size_t thr = 0; thr < target.nptrs; thr++) {
+       for (size_t i = 0; i < source.len; i++) {
+          source.host_ptr[thr] = i % (source.len / 64);
+       }
+       random_data(source.host_ptr, source.len);
     }
-    random_data(source.host_ptr, source.len);
 
     // =======================================
     // Create Device Buffers, Transfer Data
@@ -760,7 +772,7 @@ int main(int argc, char **argv)
                             if (rc2[k].ro_morton || rc2[k].ro_hilbert) {
                                 gather_smallbuf_morton(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap, rc2[k].ro_order);
                             } else if (rc2[k].kernel == GATHER_PARTS) {
-                                gather_smallbuf_partitioned(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
+                                gather_smallbuf_partitioned(target.host_ptrs, source.host_ptr, rc2[k].patterns, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
                             }
                             else {
                                 gather_smallbuf(target.host_ptrs, source.host_ptr, rc2[k].pattern, rc2[k].pattern_len, rc2[k].delta, rc2[k].generic_len, rc2[k].wrap);
@@ -1169,7 +1181,7 @@ uint64_t icbrt(uint64_t x) {
 }
 
 // Remap large pattern with heap accesses to fit within Spatter 
-spIdx_t remap_pattern(const int nrc, ssize_t *pattern, const spSize_t pattern_len, ssize_t boundary) {
+spIdx_t remap_pattern(const int nrc, spIdx_t *pattern, const spSize_t pattern_len, ssize_t boundary) {
     if (boundary == -1)
         boundary = (((SP_MAX_ALLOC - 1) / sizeof(sgData_t)) / nrc) / 2;  
   
@@ -1190,40 +1202,52 @@ spIdx_t remap_pattern(const int nrc, ssize_t *pattern, const spSize_t pattern_le
 }
 
 // for GATHER_PARTS: replicate pattern into <n_threads> successive parts.
-// Increment the values in each part by <offset> * <thread_no>.
-spIdx_t* replicate_pattern(spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset) {
+// Increment the index-values in each part by <offset> * <thread_no>.
+// This is also the per-thread offset into the index, to find its offseted values.
+// This allows each thread to have its part of the index and source be mapped locally.
+spIdx_t replicate_pattern(sgIndexBuf* new_patterns, spIdx_t *pattern, const spSize_t pattern_len, unsigned n_threads, spIdx_t offset, size_t alignment) {
+    // DEBUGGING
+    printf("replicate_pattern(, %llu, %u, %lld, 0x%llx)\n", pattern_len, n_threads, offset, alignment);
+
     spIdx_t max_pattern_val = pattern[0];
     for (size_t j = 0; j < pattern_len; j++) {
        if (pattern[j] > max_pattern_val)
           max_pattern_val = pattern[j];
     }
 
-    if (offset == -1) {
-       // // round up to nearest page
-       // spIdx_t remain = max_pattern_val & (ALIGN_PAGE -1);
-       // if (remain)
-       //    offset = (max_pattern_val & ~(ALIGN_PAGE -1)) + ALIGN_PAGE;
+    if (offset == -1)
        offset = max_pattern_val;
+
+    if (alignment) {
+       // round <offset> up to nearest <alignment>.
+       spIdx_t remain = offset & (alignment -1);
+       if (remain)
+          offset = (offset & ~(alignment -1)) + alignment;
     }
+    new_patterns->offset = offset;
 
-    spIdx_t* new_pattern = sp_calloc(sizeof(spIdx_t), pattern_len * n_threads, ALIGN_CACHE);
-    assert(new_pattern);
+    // // spIdx_t* new_patterns = sp_malloc(sizeof(spIdx_t), pattern_len * n_threads, ALIGN_PAGE);
+    // spIdx_t* new_patterns = sp_malloc(sizeof(spIdx_t), pattern_len + (offset * (n_threads -1)), ALIGN_PAGE);
+    // assert(new_patterns);
+    new_patterns->host_ptrs = sp_malloc(sizeof(spIdx_t*), n_threads, sizeof(spIdx_t*));
 
-    spIdx_t  cur_offset = 0;
-    spIdx_t* dst        = new_pattern;
+    #pragma omp parallel for  shared(pattern,new_patterns) schedule(monotonic:static,1)
     for (unsigned thr=0; thr<n_threads; ++thr) {
+       new_patterns->host_ptrs[thr] = sp_malloc(sizeof(spIdx_t), pattern_len, ALIGN_PAGE);
+       assert(new_patterns->host_ptrs[thr]);
+
+       spIdx_t* dst        = new_patterns->host_ptrs[thr];
+       spIdx_t  thr_offset = thr * offset;
        for (spIdx_t i=0; i<pattern_len; ++i) {
-          *dst++ = pattern[i] + cur_offset;
+          *dst++ = pattern[i] + thr_offset;
        }
-       cur_offset += offset;
     }
 
-    printf("Pattern Length: %zu = (%zu * %zu) ",
-           pattern_len * n_threads,
+    printf("Pattern Length: %zu (* %zu) ",
            pattern_len, n_threads);
     printf("Max Pattern Value: %zu = (%zu + (%zu-1) * %zu)\n",
            max_pattern_val + ((n_threads -1) * offset),
            max_pattern_val, n_threads, offset);
 
-    return new_pattern;
+    return offset;
 }

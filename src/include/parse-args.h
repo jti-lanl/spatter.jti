@@ -13,7 +13,8 @@
 #define STRING_SIZE 1000000
 #define MAX_PATTERN_LEN 1048576
 
-#include <sgtype.h>
+#include "sgtype.h"
+#include "sgbuf.h"
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -79,6 +80,12 @@ struct run_config
     size_t *deltas_gather_ps;
     size_t *deltas_scatter;
     size_t *deltas_scatter_ps;
+
+#if USE_OPENMP
+    sgIndexBuf* patterns;
+    sgIdx_t     thr_offset; // per-thread offset of index-values
+#endif
+
     ssize_t boundary;
     spSize_t pattern_size;
     spSize_t pattern_len;

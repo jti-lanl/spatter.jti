@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "../include/sgtype.h"
+#include "../include/sgbuf.h"
 
 void sg_omp(
             sgData_t* restrict target,
@@ -169,7 +170,7 @@ void gather_smallbuf(
 void gather_smallbuf_partitioned(
         sgData_t** restrict target,
         sgData_t* restrict source,
-        sgIdx_t* const restrict pat,
+        sgIndexBuf* const restrict pats,
         size_t pat_len,
         size_t delta,
         size_t n,
