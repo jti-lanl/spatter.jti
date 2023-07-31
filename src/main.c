@@ -144,6 +144,12 @@ double report_time(int ii, double time,  struct run_config rc, int idx){
         bytes_moved = sizeof(sgData_t) * (rc.pattern_scatter_len + rc.pattern_gather_len) * rc.generic_len;
         actual_bandwidth = bytes_moved / time / 1000. / 1000.;
     }
+    else if (rc.kernel == GATHER_PARTS) {
+        bytes_moved = sizeof(sgData_t) * rc.pattern_len * rc.generic_len * rc.omp_threads;
+        // printf("bytes = %lld (%lld * %lld * %lld * %lld)\n",
+        //        bytes_moved, sizeof(sgData_t), rc.pattern_len, rc.generic_len, rc.omp_threads);
+        actual_bandwidth = bytes_moved / time / 1000. / 1000.;
+    }
     else {
         bytes_moved = sizeof(sgData_t) * rc.pattern_len * rc.generic_len;
         actual_bandwidth = bytes_moved / time / 1000. / 1000.;
